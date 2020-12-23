@@ -15,6 +15,8 @@ RATE = 1
 CEIL = 2
 CHILDREN = 3
 
+MAX_THROUGHPUT = 30000000
+SIMPY_ITERATION = 1000
 
 def create_leaf_node(env, node, parent):
     return htb.ShaperTokenBucket(
@@ -52,19 +54,22 @@ def create_rate_limiter(env, profile, source, sink):
 
     return rl
 
+def progress_bar(env):
+    while True:
+        print("#", end="", flush=True)
+        yield env.timeout(1)
 
 def simulate(name, profile):
-    def const_size():
-        return 100.0
-
     env = simpy.Environment()
 
-    pg = htb.PacketGenerator("Source", const_size)
+    pg = htb.PacketGenerator("Source", MAX_THROUGHPUT)
     ps = htb.PacketSink(env, 'Sink')
 
     rl = create_rate_limiter(env, profile, pg, ps)
 
-    env.run(until=1000)
+    env.process(progress_bar(env))
+
+    env.run(until=SIMPY_ITERATION)
 
     print('[' + name + ']')
     rl.shapers.sort(key=lambda x: x.name)
@@ -110,52 +115,9 @@ def render(profile, shapers):
 
 
 if __name__ == '__main__':
-    profile1 = ('Root', 800, 800,
-                [('S1', 300, 800, []), ('S2', 200, 800, [])])
-    simulate("Profile1", profile1)
-
-    profile2 = ('Root', 800, 800,
-                [('S1', 200, 300, []), ('S2', 400, 500, [])])
-    simulate("Profile2", profile2)
-
-    profile3 = ('Root', 1000, 1000,
-                [('S1', 150, 150, []),
-                 ('S2', 150, 150, []),
-                 ('S3', 150, 150, []),
-                 ('S4', 150, 150, [])])
-    simulate("Profile3", profile3)
-
-    profile4 = ('Root', 10000, 10000,
-                [('S1', 150, 150, []),
-                 ('S2', 150, 150, []),
-                 ('S3', 150, 150, []),
-                 ('S4', 150, 150, []),
-                 ('S5', 150, 150, []),
-                 ('S6', 150, 150, []),
-                 ('S7', 150, 2000, [])])
-    simulate("Profile4", profile4)
-
-    profile5 = ('Root', 1000, 1000,
-                [('S1', 200, 300, []),
-                 ('S2', 150, 150, []),
-                 ('S3', 300, 400,
-                  [('S3_1', 150, 250, []),
-                   ('S3_2', 150, 200, [])]),
-                 ('S4', 150, 150, [])])
-    simulate("Profile5", profile5)
-
-    profile6 = ('Root', 5000, 5000,
-                [('T1', 1000, 1000,
-                  [('S1', 200, 300, []),
-                   ('S2', 200, 300, []),
-                   ('S3', 200, 300, [])]),
-                 ('T2', 1000, 1000,
-                  [('S4', 300, 400, []),
-                   ('S5', 300, 400, []),
-                   ('S6', 300, 400, [])]),
-                 ('T3', 300, 400,
-                  [('S7', 150, 250, []),
-                   ('S8', 150, 200, [])])])
-    simulate("Profile6", profile6)
-
-
+    profile = ('Root', 25000000, 25000000,
+               [('S1', 2000000, 5000000, []),
+                ('S2', 6000000, 10000000, []),
+                ('S3', 3000000, 7000000, []),
+                ('S4', 4000000, 6000000, [])])
+    simulate("Profile", profile)
