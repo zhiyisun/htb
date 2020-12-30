@@ -13,14 +13,15 @@ from graphviz import Digraph
 NAME = 0
 RATE = 1
 CEIL = 2
-CHILDREN = 3
+PRIO = 3
+CHILDREN = 4
 
 MAX_THROUGHPUT = 30000000
 SIMPY_ITERATION = 1000
 
 def create_leaf_node(env, node, parent):
     return htb.ShaperTokenBucket(
-        env, node[NAME], node[RATE], node[CEIL], parent)
+        env, node[NAME], node[RATE], node[CEIL], node[PRIO], parent)
 
 
 def create_inner_node(node, parent):
@@ -115,9 +116,7 @@ def render(profile, shapers):
 
 
 if __name__ == '__main__':
-    profile = ('Root', 25000000, 25000000,
-               [('S1', 2000000, 5000000, []),
-                ('S2', 6000000, 10000000, []),
-                ('S3', 3000000, 7000000, []),
-                ('S4', 4000000, 6000000, [])])
+    profile = ('Root', 25000000, 25000000, 1,
+               [('S1', 2000000, 25000000, 1, []),
+                ('S2', 21000000, 25000000, 2,[])])
     simulate("Profile", profile)

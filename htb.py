@@ -5,6 +5,9 @@ PKT_MIN_LEN = 64
 PKT_MAX_LEN = 1518
 REPLENISH_INTERVAL = 0.001
 
+HIGHEST_PRIO = 0
+LOWEST_PRIO = 7
+
 class TokenBucketNode(object):
 
     def __init__(self, name, rate, ceil, parent=None, debug=False):
@@ -107,7 +110,7 @@ class TokenBucketNode(object):
 
 class ShaperTokenBucket(TokenBucketNode):
 
-    def __init__(self, env, name, rate, ceil, parent=None, debug=False):
+    def __init__(self, env, name, rate, ceil, prio, parent=None, debug=False):
         super().__init__(name, rate, ceil, parent, debug)
 
         # Simulation variables
@@ -123,6 +126,8 @@ class ShaperTokenBucket(TokenBucketNode):
 
         self.name = name
         self.debug = debug
+
+        self.prio = prio
 
         self.action = env.process(self.run())
 
@@ -191,10 +196,16 @@ class RateLimiter(object):
             yield self.env.timeout(self.replenish_interval)
 
     def process_nodes_that_can_send1(self):
-        random.shuffle(self.shapers)
-        for shaper in self.shapers:
-            while shaper.has_packets() and shaper.can_send():
-                shaper.send()
+        for prio_val in range(HIGHEST_PRIO, LOWEST_PRIO + 1):
+            temp_shapers = []
+            for shaper in self.shapers:
+                if shaper.prio == prio_val:
+                    temp_shapers.append(shaper)
+            if temp_shapers:
+                random.shuffle(temp_shapers)
+                for shaper in temp_shapers:
+                    while shaper.has_packets() and shaper.can_send():
+                        shaper.send()
 
     def process_nodes_that_can_send(self):
         while True:
@@ -208,10 +219,16 @@ class RateLimiter(object):
                 break
 
     def process_nodes_that_can_borrow1(self):
-        random.shuffle(self.shapers)
-        for shaper in self.shapers:
-            while shaper.has_packets() and shaper.can_borrow():
-                shaper.borrow_and_send()
+        for prio_val in range(HIGHEST_PRIO, LOWEST_PRIO + 1):
+            temp_shapers = []
+            for shaper in self.shapers:
+                if shaper.prio == prio_val:
+                    temp_shapers.append(shaper)
+            if temp_shapers:
+                random.shuffle(temp_shapers)
+                for shaper in temp_shapers:
+                    while shaper.has_packets() and shaper.can_borrow():
+                        shaper.borrow_and_send()
 
     def process_nodes_that_can_borrow(self):
         while True:
