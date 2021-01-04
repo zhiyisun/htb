@@ -14,14 +14,14 @@ NAME = 0
 RATE = 1
 CEIL = 2
 PRIO = 3
-CHILDREN = 4
+INPUT_RATE = 4
+CHILDREN = 5
 
-MAX_THROUGHPUT = 30000000
-SIMPY_ITERATION = 1000
+SIMPY_ITERATION = 100
 
 def create_leaf_node(env, node, parent):
     return htb.ShaperTokenBucket(
-        env, node[NAME], node[RATE], node[CEIL], node[PRIO], parent)
+        env, node[NAME], node[RATE], node[CEIL], node[PRIO], node[INPUT_RATE], parent)
 
 
 def create_inner_node(node, parent):
@@ -41,7 +41,7 @@ def create_shaper_subtree(env, nodes, parent):
     return shapers
 
 
-def create_rate_limiter(env, profile, source, sink):
+def create_rate_limiter(env, profile):
     shapers = []
     rl = htb.RateLimiter(env)
 
@@ -49,8 +49,6 @@ def create_rate_limiter(env, profile, source, sink):
     shapers += create_shaper_subtree(env, profile[CHILDREN], root)
 
     for shaper in shapers:
-        shaper.inp = source
-        shaper.outp = sink
         rl.add_shaper(shaper)
 
     return rl
@@ -63,20 +61,19 @@ def progress_bar(env):
 def simulate(name, profile):
     env = simpy.Environment()
 
-    pg = htb.PacketGenerator("Source", MAX_THROUGHPUT)
-    ps = htb.PacketSink(env, 'Sink')
-
-    rl = create_rate_limiter(env, profile, pg, ps)
+    rl = create_rate_limiter(env, profile)
 
     env.process(progress_bar(env))
 
     env.run(until=SIMPY_ITERATION)
 
+    print()
     print('[' + name + ']')
     rl.shapers.sort(key=lambda x: x.name)
     for shaper in rl.shapers:
         print(shaper.stats())
-    print(ps.stats())
+        print(shaper.inp.stats())
+        print(shaper.outp.stats())
     print()
 
     render(name, rl.shapers)
@@ -116,7 +113,7 @@ def render(profile, shapers):
 
 
 if __name__ == '__main__':
-    profile = ('Root', 25000000, 25000000, 1,
-               [('S1', 2000000, 25000000, 1, []),
-                ('S2', 21000000, 25000000, 2,[])])
+    profile = ('Root', 25000000, 25000000, 0, 0, 
+               [('S1', 12000000, 25000000, 1, 30000000, []),
+                ('S2', 3000000, 25000000, 1, 30000000, [])])
     simulate("Profile", profile)

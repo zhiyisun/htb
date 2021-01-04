@@ -51,14 +51,30 @@ class TokenBucketNode(object):
         self.update_time = now
         self.update_state()
 
-    def account(self, amount):
+    def account_cir(self, amount):
+        if amount > self.tokens:
+            if self.debug:
+                print("%s: Exceeding all tokens" % (self.name))
+            return False
+
+        if self.parent:
+            if not self.parent.account_cir(amount):
+                return False
+
+        self.tokens = max(0, self.tokens - amount)
+        self.ctokens = max(0, self.ctokens - amount)
+        self.update_state()
+
+        return True
+
+    def account_pir(self, amount):
         if amount > self.tokens and amount > self.ctokens:
             if self.debug:
                 print("%s: Exceeding all tokens" % (self.name))
             return False
 
         if self.parent:
-            if not self.parent.account(amount):
+            if not self.parent.account_pir(amount):
                 return False
 
         self.tokens = max(0, self.tokens - amount)
@@ -110,71 +126,81 @@ class TokenBucketNode(object):
 
 class ShaperTokenBucket(TokenBucketNode):
 
-    def __init__(self, env, name, rate, ceil, prio, parent=None, debug=False):
+    def __init__(self, env, name, rate, ceil, prio, input_rate, parent=None, debug=False):
         super().__init__(name, rate, ceil, parent, debug)
 
         # Simulation variables
         self.env = env
-        self.inp = None
-        self.outp = None
-        self.pkt_sent = self.env.event()
-        self.q = None
+        self.inp = PacketGenerator(env, "Source_" + name, input_rate)
+        self.outp = PacketSink(env, 'Sink_'+ name)
 
         # Statistics
         self.packets_sent = 0
         self.bytes_sent = 0
+        self.last_sent_time = 0
 
         self.name = name
         self.debug = debug
 
         self.prio = prio
+        self.input_rate = input_rate
 
         self.action = env.process(self.run())
 
     def run(self):
         while True:
             if self.inp:
-                self.q = self.inp.get_q()
                 self.inp.enq_pkt()
-                yield self.pkt_sent
+            yield self.env.timeout(REPLENISH_INTERVAL)
 
-    def send(self):
-        while not self.q.empty():
-            pkt = self.q.get()
-            if self.account(pkt.size):
+    def send_cir(self):
+        while not self.inp.q.empty():
+            pkt = self.inp.q.get(block=False)
+            if self.account_cir(pkt.size):
                 self.outp.put(pkt)
                 self.packets_sent += 1
                 self.bytes_sent += pkt.size
+                self.last_sent_time = self.env.now
             else:
                 # TODO: how to put packet back to the head of queue
-                self.q.put(pkt)
+                self.inp.q.put(pkt)
                 break
-        self.pkt_sent.succeed()
-        self.pkt_sent = self.env.event()
+
+    def send_pir(self):
+        while not self.inp.q.empty():
+            pkt = self.inp.q.get(block=False)
+            if self.account_pir(pkt.size):
+                self.outp.put(pkt)
+                self.packets_sent += 1
+                self.bytes_sent += pkt.size
+                self.last_sent_time = self.env.now
+            else:
+                # TODO: how to put packet back to the head of queue
+                self.inp.q.put(pkt)
+                break
+
 
     def borrow_and_send(self):
         if self.borrow_from_parent():
-            self.send()
+            self.send_pir()
             return True
         return False
 
     def has_packets(self):
-        if self.q is not None:
-            return not self.q.empty()
+        if self.inp.q is not None:
+            return not self.inp.q.empty()
         return False
 
     def stats(self, short=False):
         if short:
-            return "%d" % (self.bytes_sent / self.env.now)
+            return "%d %d" % (self.bytes_sent, self.bytes_sent / self.env.now)
         else:
-            return "%s: %d Bps" % (self.name, self.bytes_sent / self.env.now)
+            return "%s sent: %d packets(%d B) rate: %d Bps" % (self.name, self.packets_sent, self.bytes_sent, self.bytes_sent / self.last_sent_time)
 
 
 class RateLimiter(object):
     def __init__(self, env):
         self.shapers = []
-        self.replenish_interval = REPLENISH_INTERVAL
-
         self.env = env
         self.action = env.process(self.run())
 
@@ -190,12 +216,12 @@ class RateLimiter(object):
         while True:
             self.replenish()
 
-            self.process_nodes_that_can_send1()
-            self.process_nodes_that_can_borrow1()
+            self.process_nodes_that_can_send()
+            self.process_nodes_that_can_borrow()
 
-            yield self.env.timeout(self.replenish_interval)
+            yield self.env.timeout(REPLENISH_INTERVAL)
 
-    def process_nodes_that_can_send1(self):
+    def process_nodes_that_can_send(self):
         for prio_val in range(HIGHEST_PRIO, LOWEST_PRIO + 1):
             temp_shapers = []
             for shaper in self.shapers:
@@ -205,20 +231,9 @@ class RateLimiter(object):
                 random.shuffle(temp_shapers)
                 for shaper in temp_shapers:
                     while shaper.has_packets() and shaper.can_send():
-                        shaper.send()
+                        shaper.send_cir()
 
-    def process_nodes_that_can_send(self):
-        while True:
-            sent = False
-            random.shuffle(self.shapers)
-            for shaper in self.shapers:
-                if shaper.has_packets() and shaper.can_send():
-                    shaper.send()
-                    sent = True
-            if not sent:
-                break
-
-    def process_nodes_that_can_borrow1(self):
+    def process_nodes_that_can_borrow(self):
         for prio_val in range(HIGHEST_PRIO, LOWEST_PRIO + 1):
             temp_shapers = []
             for shaper in self.shapers:
@@ -230,29 +245,20 @@ class RateLimiter(object):
                     while shaper.has_packets() and shaper.can_borrow():
                         shaper.borrow_and_send()
 
-    def process_nodes_that_can_borrow(self):
-        while True:
-            sent = False
-            random.shuffle(self.shapers)
-            for shaper in self.shapers:
-                if shaper.has_packets() and shaper.can_borrow():
-                    sent |= shaper.borrow_and_send()
-            if not sent:
-                break
-
-
 class Packet(object):
     def __init__(self, size):
         self.size = size
 
 
 class PacketGenerator(object):
-    def __init__(self, name, throughput):
+    def __init__(self, env, name, throughput):
         self.name = name
         self.packets_sent = 0
         self.bytes_sent = 0
         self.throughput = throughput
         self.q = queue.Queue()
+        self.last_sent = 0.0
+        self.env = env
 
     def get_pkt(self):
         pkt = Packet(random.randint(PKT_MIN_LEN,PKT_MAX_LEN))
@@ -262,16 +268,26 @@ class PacketGenerator(object):
         bytes_gen = 0
         while True:
             pkt = self.get_pkt()
-            if bytes_gen + pkt.size >= self.throughput * REPLENISH_INTERVAL:
-                break
+            if (self.env.now == 0):
+                if (bytes_gen + pkt.size > self.throughput * REPLENISH_INTERVAL):
+                    break
+            else:
+                if (((self.bytes_sent + pkt.size)/self.env.now) > self.throughput):
+                    break
             self.q.put(pkt)
             self.packets_sent += 1
             self.bytes_sent += pkt.size
             bytes_gen += pkt.size
+        self.last_sent = self.env.now
 
-    def get_q(self):
-        return self.q
+    def rate(self):
+        if (self.last_sent != 0):
+            return self.bytes_sent / self.last_sent
+        else:
+            return 0
 
+    def stats(self):
+        return "%s sent: %d packets(%d B) rate: %d Bps" % (self.name, self.packets_sent, self.bytes_sent, self.rate())
 
 
 class PacketSink(object):
@@ -288,7 +304,10 @@ class PacketSink(object):
         self.last_arrival = self.env.now
 
     def rate(self):
-        return self.bytes_recv / self.last_arrival
+        if (self.last_arrival != 0):
+            return self.bytes_recv / self.last_arrival
+        else:
+            return 0
 
     def stats(self):
-        return "%s: %d Bps" % (self.name, self.rate())
+        return "%s sent: %d packets(%d B) rate: %d Bps" % (self.name, self.packets_recv, self.bytes_recv, self.rate())
