@@ -51,14 +51,14 @@ class TokenBucketNode(object):
         self.update_time = now
         self.update_state()
 
-    def account_cir(self, amount):
+    def account_rate(self, amount):
         if amount > self.tokens:
             if self.debug:
                 print("%s: Exceeding all tokens" % (self.name))
             return False
 
         if self.parent:
-            if not self.parent.account_cir(amount):
+            if not self.parent.account_rate(amount):
                 return False
 
         self.tokens = max(0, self.tokens - amount)
@@ -67,14 +67,14 @@ class TokenBucketNode(object):
 
         return True
 
-    def account_pir(self, amount):
+    def account_ceil(self, amount):
         if amount > self.tokens and amount > self.ctokens:
             if self.debug:
                 print("%s: Exceeding all tokens" % (self.name))
             return False
 
         if self.parent:
-            if not self.parent.account_pir(amount):
+            if not self.parent.account_ceil(amount):
                 return False
 
         self.tokens = max(0, self.tokens - amount)
@@ -153,10 +153,10 @@ class ShaperTokenBucket(TokenBucketNode):
                 self.inp.enq_pkt()
             yield self.env.timeout(REPLENISH_INTERVAL)
 
-    def send_cir(self):
+    def send(self, account_fun):
         while not self.inp.q.empty():
             pkt = self.inp.q.get(block=False)
-            if self.account_cir(pkt.size):
+            if account_fun(pkt.size):
                 self.outp.put(pkt)
                 self.packets_sent += 1
                 self.bytes_sent += pkt.size
@@ -166,23 +166,15 @@ class ShaperTokenBucket(TokenBucketNode):
                 self.inp.q.put(pkt)
                 break
 
-    def send_pir(self):
-        while not self.inp.q.empty():
-            pkt = self.inp.q.get(block=False)
-            if self.account_pir(pkt.size):
-                self.outp.put(pkt)
-                self.packets_sent += 1
-                self.bytes_sent += pkt.size
-                self.last_sent_time = self.env.now
-            else:
-                # TODO: how to put packet back to the head of queue
-                self.inp.q.put(pkt)
-                break
+    def send_rate(self):
+        self.send(self.account_rate)
 
+    def send_ceil(self):
+        self.send(self.account_ceil)
 
     def borrow_and_send(self):
         if self.borrow_from_parent():
-            self.send_pir()
+            self.send_ceil()
             return True
         return False
 
@@ -195,7 +187,7 @@ class ShaperTokenBucket(TokenBucketNode):
         if short:
             return "%d %d" % (self.bytes_sent, self.bytes_sent / self.env.now)
         else:
-            return "%s sent: %d packets(%d B) rate: %d Bps" % (self.name, self.packets_sent, self.bytes_sent, self.bytes_sent / self.last_sent_time)
+            return "%10s  deq:  %15d packets  %15d Bytes rate:  %15d Bps" % (self.name, self.packets_sent, self.bytes_sent, self.bytes_sent / self.last_sent_time)
 
 
 class RateLimiter(object):
@@ -231,7 +223,7 @@ class RateLimiter(object):
                 random.shuffle(temp_shapers)
                 for shaper in temp_shapers:
                     while shaper.has_packets() and shaper.can_send():
-                        shaper.send_cir()
+                        shaper.send_rate()
 
     def process_nodes_that_can_borrow(self):
         for prio_val in range(HIGHEST_PRIO, LOWEST_PRIO + 1):
@@ -287,7 +279,7 @@ class PacketGenerator(object):
             return 0
 
     def stats(self):
-        return "%s sent: %d packets(%d B) rate: %d Bps" % (self.name, self.packets_sent, self.bytes_sent, self.rate())
+        return "%10s sent:  %15d packets  %15d Bytes rate:  %15d Bps" % (self.name, self.packets_sent, self.bytes_sent, self.rate())
 
 
 class PacketSink(object):
@@ -310,4 +302,4 @@ class PacketSink(object):
             return 0
 
     def stats(self):
-        return "%s sent: %d packets(%d B) rate: %d Bps" % (self.name, self.packets_recv, self.bytes_recv, self.rate())
+        return "%10s recv:  %15d packets  %15d Bytes rate:  %15d Bps" % (self.name, self.packets_recv, self.bytes_recv, self.rate())
